@@ -62,6 +62,8 @@ impl WindowManager {
 
         // main event loop
         loop {
+            self.connection.flush();
+
             let e = self
                 .connection
                 .wait_for_event()
@@ -176,7 +178,7 @@ impl WindowManager {
 
         xcb::map_window(&self.connection, wid);
 
-        self.clients.insert(window, wid).unwrap();
+        self.clients.insert(window, wid);
 
         let key_symbols = keysyms::KeySymbols::new(&self.connection);
 
@@ -268,7 +270,5 @@ impl WindowManager {
         self.clients.remove(&window);
     }
 
-    fn on_button_press(&self, event: &xcb::ButtonPressEvent){
-        
-    }
+    fn on_button_press(&self, event: &xcb::ButtonPressEvent) {}
 }
