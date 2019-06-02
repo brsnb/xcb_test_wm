@@ -1,0 +1,10 @@
+[package]
+name = "xcb_test_wm"
+version = "0.1.0"
+authors = ["brsnb"]
+edition = "2018"
+
+[dependencies]
+xcb = "0.8.2"
+xcb-util = { version="0.2.0", features=["keysyms"] }
+x11 = "2.18.1"
