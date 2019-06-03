@@ -1,12 +1,26 @@
+use std::cmp;
 use std::collections::HashMap;
 use x11;
 use xcb;
 use xcb_util::keysyms;
 
+pub struct Position {
+    x: i16,
+    y: i16,
+}
+
+pub struct Size {
+    width: i16,
+    height: i16,
+}
+
 pub struct WindowManager {
     connection: xcb::Connection,
     root: xcb::Window,
     clients: HashMap<xcb::Window, xcb::Window>,
+    drag_start: Position,
+    drag_start_frame: Position,
+    drag_start_frame_size: Size,
 }
 
 impl WindowManager {
@@ -29,6 +43,12 @@ impl WindowManager {
             connection,
             root,
             clients,
+            drag_start: Position { x: 0, y: 0 },
+            drag_start_frame: Position { x: 0, y: 0 },
+            drag_start_frame_size: Size {
+                width: 0,
+                height: 0,
+            },
         }
     }
 
@@ -74,6 +94,7 @@ impl WindowManager {
                     xcb::MAP_REQUEST => self.on_map_request(xcb::cast_event(&e)),
                     xcb::UNMAP_NOTIFY => self.on_unmap_notify(xcb::cast_event(&e)),
                     xcb::BUTTON_PRESS => self.on_button_press(xcb::cast_event(&e)),
+                    xcb::MOTION_NOTIFY => self.on_motion_notify(xcb::cast_event(&e)),
                     _ => continue,
                 };
             }
@@ -138,6 +159,10 @@ impl WindowManager {
         let geo = xcb::get_geometry(&self.connection, window)
             .get_reply()
             .expect("Could not get geometry of parent window");
+        let value_list = vec![
+            (xcb::CW_BORDER_PIXEL as u32, border_color as u32),
+            (xcb::CW_BACK_PIXEL as u32, bg_color as u32),
+        ];
 
         // creates border window with above options
         xcb::create_window(
@@ -152,15 +177,8 @@ impl WindowManager {
             border_width,
             xcb::WINDOW_CLASS_INPUT_OUTPUT as u16,
             xcb::COPY_FROM_PARENT,
-            &vec![],
+            &value_list,
         );
-
-        // change border color
-        let value_list = vec![
-            (xcb::CW_BORDER_PIXEL as u16, border_color as u32),
-            (xcb::CW_BACK_PIXEL as u16, bg_color as u32),
-        ];
-        xcb::configure_window(&self.connection, wid, &value_list);
 
         // register substructure redirect/notify on new window
         let value_list = vec![(
@@ -270,5 +288,78 @@ impl WindowManager {
         self.clients.remove(&window);
     }
 
-    fn on_button_press(&self, event: &xcb::ButtonPressEvent) {}
+    fn on_button_press(&mut self, event: &xcb::ButtonPressEvent) {
+        assert!(self.clients.contains_key(&event.event()));
+
+        let frame: xcb::Window = self.clients[&event.event()];
+
+        self.drag_start = Position {
+            x: event.root_x(),
+            y: event.root_y(),
+        };
+
+        let geo = xcb::get_geometry(&self.connection, frame)
+            .get_reply()
+            .expect("Could not get geometry of parent window");
+
+        self.drag_start_frame = Position {
+            x: geo.x(),
+            y: geo.y(),
+        };
+
+        self.drag_start_frame_size = Size {
+            width: geo.width() as i16,
+            height: geo.height() as i16,
+        }
+    }
+
+    fn on_motion_notify(&mut self, event: &xcb::MotionNotifyEvent) {
+        assert!(self.clients.contains_key(&event.event()));
+
+        let frame: xcb::Window = self.clients[&event.event()];
+
+        let drag_pos = Position {
+            x: event.root_x(),
+            y: event.root_y(),
+        };
+
+        let delta = Position {
+            x: drag_pos.x - self.drag_start.x,
+            y: drag_pos.y - self.drag_start.y,
+        };
+
+        if event.state() as u32 & xcb::BUTTON_MASK_1 > 0 {
+            let dest_fram_pos = Position {
+                x: self.drag_start_frame.x + delta.x,
+                y: self.drag_start_frame.y + delta.y,
+            };
+
+            let value_list = vec![
+                (xcb::CONFIG_WINDOW_X as u16, dest_fram_pos.x as u32),
+                (xcb::CONFIG_WINDOW_Y as u16, dest_fram_pos.y as u32),
+            ];
+
+            xcb::configure_window(&self.connection, frame, &value_list);
+        } else if event.state() as u32 & xcb::BUTTON_MASK_3 > 0 {
+            let size_delta = Size {
+                width: cmp::max(delta.x, -self.drag_start_frame_size.height),
+                height: cmp::max(delta.y, -self.drag_start_frame_size.width),
+            };
+
+            let dest_size = Size {
+                width: self.drag_start_frame_size.width + size_delta.width,
+                height: self.drag_start_frame_size.height + size_delta.height,
+            };
+
+            // resize frame
+            let value_list = vec![
+                (xcb::CONFIG_WINDOW_WIDTH as u16, dest_size.width as u32),
+                (xcb::CONFIG_WINDOW_HEIGHT as u16, dest_size.height as u32),
+            ];
+            xcb::configure_window(&self.connection, frame, &value_list);
+
+            // resize client
+            xcb::configure_window(&self.connection, event.event(), &value_list);
+        }
+    }
 }
