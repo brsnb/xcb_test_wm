@@ -2,16 +2,41 @@ use std::cmp;
 use std::collections::HashMap;
 use x11;
 use xcb;
-use xcb_util::keysyms;
+use xcb_util::{ewmh, icccm, keysyms};
 
-pub struct Position {
+struct Position {
     x: i16,
     y: i16,
 }
 
-pub struct Size {
+struct Size {
     width: i16,
     height: i16,
+}
+
+#[allow(non_snake_case)]
+struct InternedAtoms {
+    WM_PROTOCOLS: xcb::Atom,
+    WM_DELETE_WINDOW: xcb::Atom,
+}
+
+#[allow(non_snake_case)]
+impl InternedAtoms {
+    pub fn new(connection: &xcb::Connection) -> InternedAtoms {
+        let WM_PROTOCOLS = xcb::intern_atom(&connection, false, "WM_PROTOCOLS")
+            .get_reply()
+            .expect("Could not intern atom")
+            .atom();
+        let WM_DELETE_WINDOW = xcb::intern_atom(&connection, false, "WM_DELETE_WINDOW")
+            .get_reply()
+            .expect("Could not intern atom")
+            .atom();
+
+        InternedAtoms {
+            WM_PROTOCOLS,
+            WM_DELETE_WINDOW,
+        }
+    }
 }
 
 pub struct WindowManager {
@@ -21,6 +46,7 @@ pub struct WindowManager {
     drag_start: Position,
     drag_start_frame: Position,
     drag_start_frame_size: Size,
+    atoms: InternedAtoms,
 }
 
 impl WindowManager {
@@ -39,6 +65,8 @@ impl WindowManager {
 
         let clients = HashMap::new();
 
+        let atoms = InternedAtoms::new(&connection);
+
         WindowManager {
             connection,
             root,
@@ -49,6 +77,7 @@ impl WindowManager {
                 width: 0,
                 height: 0,
             },
+            atoms,
         }
     }
 
@@ -95,6 +124,7 @@ impl WindowManager {
                     xcb::UNMAP_NOTIFY => self.on_unmap_notify(xcb::cast_event(&e)),
                     xcb::BUTTON_PRESS => self.on_button_press(xcb::cast_event(&e)),
                     xcb::MOTION_NOTIFY => self.on_motion_notify(xcb::cast_event(&e)),
+                    xcb::KEY_PRESS => self.on_key_press(xcb::cast_event(&e)),
                     _ => continue,
                 };
             }
@@ -360,6 +390,45 @@ impl WindowManager {
 
             // resize client
             xcb::configure_window(&self.connection, event.event(), &value_list);
+        }
+    }
+
+    fn on_key_press(&mut self, event: &xcb::KeyPressEvent) {
+        let key_symbols = keysyms::KeySymbols::new(&self.connection);
+        let keycode = key_symbols
+            .get_keycode(x11::keysym::XK_F4)
+            .next()
+            .expect("Could not get keycode from key press event");
+
+        if (event.state() as u32 & xcb::MOD_MASK_1) > 0 && (event.detail() == keycode) {
+            let supported_protocols: Vec<u32> =
+                icccm::get_wm_protocols(&self.connection, event.event(), self.atoms.WM_PROTOCOLS)
+                    .get_reply()
+                    .expect("Could not query for wm_protocols")
+                    .atoms()
+                    .to_vec();
+
+            if supported_protocols.contains(&self.atoms.WM_DELETE_WINDOW) {
+                let data = xcb::ClientMessageData::from_data32([
+                    self.atoms.WM_DELETE_WINDOW,
+                    xcb::CURRENT_TIME,
+                    0,
+                    0,
+                    0,
+                ]);
+
+                let delete_event =
+                    xcb::ClientMessageEvent::new(32, event.event(), self.atoms.WM_PROTOCOLS, data);
+                xcb::send_event(
+                    &self.connection,
+                    false,
+                    event.event(),
+                    xcb::EVENT_MASK_NO_EVENT,
+                    &delete_event,
+                );
+            } else {
+                xcb::destroy_window(&self.connection, event.event());
+            }
         }
     }
 }
